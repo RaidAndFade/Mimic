@@ -1,0 +1,15 @@
+# Editor files
+
+.vscode
+
+# Build outputs
+
+obj
+bin
+
+# Binary files
+
+*.obj
+*.o
+*.lib
+*.dll

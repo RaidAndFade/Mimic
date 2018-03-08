@@ -26,6 +26,7 @@ namespace Mimic.RealmServer
         private TcpClient _client;
         private Stream _clientStream;
         private AsyncBinaryReader _reader;
+        private SrpHandler _authentication;
 
         private AuthCommand _currentCommand;
 
@@ -57,7 +58,7 @@ namespace Mimic.RealmServer
                         break;
                     default:
                         Debug.WriteLine($"Unhandled opcode {cmd} (0x{cmd:X})");
-                        await CloseAsync(AuthError.Unimplemented);
+                        await CloseAsync(AuthStatus.Unimplemented);
                         break;
                 }
             }
@@ -77,7 +78,7 @@ namespace Mimic.RealmServer
 
             if (_client.Available < size)
             {
-                await CloseAsync(AuthError.ProtocolError);
+                await CloseAsync(AuthStatus.ProtocolError);
                 return;
             }
 
@@ -85,7 +86,7 @@ namespace Mimic.RealmServer
 
             if (gameName != GameName)
             {
-                await CloseAsync(AuthError.ProtocolError);
+                await CloseAsync(AuthStatus.ProtocolError);
                 return;
             }
 
@@ -107,61 +108,56 @@ namespace Mimic.RealmServer
             var accountNameLength = await reader.ReadUInt8Async();
             var accountName = await reader.ReadStringAsync(accountNameLength);
 
-            // TODO: clean up this code using a proper SRP6 handler
-
             using (var sha = SHA1.Create())
             {
-                // TODO: retrieve pre-hashed password information from db
                 var pw = Encoding.UTF8.GetBytes(TestPassword);
                 var hash = sha.ComputeHash(pw);
 
-                // Swap the endianness of the hash and pad with 0 to force
-                // a positive value (not needed in openssl)
-                Array.Reverse(hash);
-                Array.Resize(ref hash, hash.Length + 1);
-                hash[hash.Length - 1] = 0;
-
-                var x = new BigInteger(hash);
-
-                // Calculate server-side SRP values
-
-                var v = BigInteger.ModPow(g, x, N);
-                var s = BigInteger.Abs(new BigInteger(GetRandomBytes(32)));
-                var b = BigInteger.Abs(new BigInteger(GetRandomBytes(19)));
-                var gmod = BigInteger.ModPow(g, b, N);
-                var B = ((v * 3) + gmod) % N;
-
-                var unk3 = new BigInteger(GetRandomBytes(16));
-
-                List<byte> data = new List<byte>();
-
-                data.Add((byte)_currentCommand);
-                data.Add(0);
-                data.Add((byte)AuthError.Success);
-
-                // Pack data for client
-
-                // one-time key (32 bytes)
-                data.AddRange(B.ToByteArray().Take(32));
-                // generator (1 byte)
-                data.Add(1);
-                data.AddRange(g.ToByteArray().Take(1));
-                // safe prime (32 bytes)
-                data.Add(32);
-                data.AddRange(N.ToByteArray().Take(32));
-                // salt
-                data.AddRange(s.ToByteArray().Take(32));
-                // ???
-                data.AddRange(unk3.ToByteArray().Take(16));
-
-                // security flags
-                data.Add(0);
-
-                await _clientStream.WriteAsync(data.ToArray(), 0, data.Count);
+                _authentication = new SrpHandler(
+                    accountName.ToUpperInvariant(),
+                    hash);
             }
+
+            var unk3 = _authentication.GenerateRandomNumber(16);
+
+            // TODO: AsyncBinaryWriter?
+            List<byte> data = new List<byte>();
+
+            data.Add((byte)_currentCommand);
+            data.Add(0);
+            data.Add((byte)AuthStatus.Success);
+
+            // B
+            var publicKey = _authentication.PublicKey.ToByteArray();
+            if (publicKey.Length < 32)
+                Array.Resize(ref publicKey, 32);
+
+            data.AddRange(publicKey);
+
+            // g
+            var generator = _authentication.Generator.ToByteArray();
+            data.Add((byte)generator.Length);
+            data.AddRange(generator);
+
+            // N
+            var safePrime = _authentication.SafePrime.ToByteArray();
+            data.Add((byte)safePrime.Length);
+            data.AddRange(safePrime);
+
+            // s
+            var salt = _authentication.Salt.ToByteArray();
+            data.AddRange(salt);
+
+            // ???
+            data.AddRange(unk3.ToByteArray());
+
+            data.Add(0);
+
+            data[1] = (byte)data.Count; // packet length
+            await _clientStream.WriteAsync(data.ToArray(), 0, data.Count);
         }
 
-        private async Task SendErrorAsync(AuthError errorCode)
+        private async Task SendErrorAsync(AuthStatus errorCode)
         {
             // TODO: make sure this is a valid packet
             // The client disconnects when we send this, which is good but not
@@ -176,7 +172,7 @@ namespace Mimic.RealmServer
             await _clientStream.WriteAsync(data, 0, 4);
         }
 
-        private async Task CloseAsync(AuthError errorCode)
+        private async Task CloseAsync(AuthStatus errorCode)
         {
             await SendErrorAsync(errorCode);
             await Task.Delay(300); // Give the packet some time to be sent

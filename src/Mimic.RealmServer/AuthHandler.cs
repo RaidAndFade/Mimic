@@ -1,12 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
-using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
@@ -19,25 +17,15 @@ namespace Mimic.RealmServer
         private const uint GameName = 0x00_57_6f_57; // 'WoW'
         private const string TestPassword = "TEST:Password";
 
-        private static readonly BigInteger N;
-        private static readonly BigInteger g;
-
         private bool _run = true;
         private TcpClient _client;
         private Stream _clientStream;
         private AsyncBinaryReader _reader;
         private SrpHandler _authentication;
 
-        private AuthCommand _currentCommand;
+        private ushort _buildNumber;
 
-        static AuthHandler()
-        {
-            // TODO: pass these from a config file
-            N = BigInteger.Parse(
-"894B645E89E1535BBDAD5B8B290650530801B18EBFBF5E8FAB3C82872A3E9BB7",
-                NumberStyles.HexNumber);
-            g = new BigInteger(7);
-        }
+        private AuthCommand _currentCommand;
 
         public async Task RunAsync(TcpClient client)
         {
@@ -54,7 +42,10 @@ namespace Mimic.RealmServer
                 switch (cmd)
                 {
                     case AuthCommand.LogonChallenge:
-                        await HandleLogonChallenge(_reader);
+                        await HandleLogonChallenge();
+                        break;
+                    case AuthCommand.LogonProof:
+                        await HandleLogonProof();
                         break;
                     default:
                         Debug.WriteLine($"Unhandled opcode {cmd} (0x{cmd:X})");
@@ -71,10 +62,10 @@ namespace Mimic.RealmServer
             _client?.Dispose();
         }
 
-        private async Task HandleLogonChallenge(AsyncBinaryReader reader)
+        private async Task HandleLogonChallenge()
         {
-            var error = await reader.ReadUInt8Async(); // always 3
-            var size = await reader.ReadUInt16Async();
+            var error = await _reader.ReadUInt8Async(); // always 3
+            var size = await _reader.ReadUInt16Async();
 
             if (_client.Available < size)
             {
@@ -82,7 +73,7 @@ namespace Mimic.RealmServer
                 return;
             }
 
-            var gameName = await reader.ReadUInt32Async();
+            var gameName = await _reader.ReadUInt32Async();
 
             if (gameName != GameName)
             {
@@ -90,23 +81,23 @@ namespace Mimic.RealmServer
                 return;
             }
 
-            var versionMajor = await reader.ReadUInt8Async();
-            var versionMinor = await reader.ReadUInt8Async();
-            var versionPatch = await reader.ReadUInt8Async();
+            var versionMajor = await _reader.ReadUInt8Async();
+            var versionMinor = await _reader.ReadUInt8Async();
+            var versionPatch = await _reader.ReadUInt8Async();
 
-            var buildNumber = await reader.ReadUInt16Async();
+            _buildNumber = await _reader.ReadUInt16Async();
 
-            var platform = (Architecture)await reader.ReadUInt32Async();
-            var os = (OperatingSystem)await reader.ReadUInt32Async();
-            var locale = (Locale)await reader.ReadUInt32Async();
+            var platform = (Architecture)await _reader.ReadUInt32Async();
+            var os = (OperatingSystem)await _reader.ReadUInt32Async();
+            var locale = (Locale)await _reader.ReadUInt32Async();
 
-            var timezoneBias = await reader.ReadUInt32Async();
+            var timezoneBias = await _reader.ReadUInt32Async();
 
-            var ipAddress = new IPAddress(await reader.ReadUInt32Async());
+            var ipAddress = new IPAddress(await _reader.ReadUInt32Async());
             var realAddress = (_client.Client.RemoteEndPoint as IPEndPoint).Address;
 
-            var accountNameLength = await reader.ReadUInt8Async();
-            var accountName = await reader.ReadStringAsync(accountNameLength);
+            var accountNameLength = await _reader.ReadUInt8Async();
+            var accountName = await _reader.ReadStringAsync(accountNameLength);
 
             using (var sha = SHA1.Create())
             {
@@ -128,7 +119,7 @@ namespace Mimic.RealmServer
             data.Add((byte)AuthStatus.Success);
 
             // B
-            var publicKey = _authentication.PublicKey.ToByteArray();
+            var publicKey = _authentication.ServerPublicKey.ToByteArray();
             if (publicKey.Length < 32)
                 Array.Resize(ref publicKey, 32);
 
@@ -151,9 +142,40 @@ namespace Mimic.RealmServer
             // ???
             data.AddRange(unk3.ToByteArray());
 
+            // security flags
             data.Add(0);
 
-            data[1] = (byte)data.Count; // packet length
+            await _clientStream.WriteAsync(data.ToArray(), 0, data.Count);
+        }
+
+        public async Task HandleLogonProof()
+        {
+            var clientPublicKey = await _reader.ReadBytesAsync(32);
+            var clientProof = await _reader.ReadBytesAsync(20);
+            var crc = await _reader.ReadBytesAsync(20);
+            var keyCount = await _reader.ReadUInt8Async();
+            var securityFlags = await _reader.ReadUInt8Async();
+
+            if (!_authentication.Authenticate(clientPublicKey, clientProof))
+            {
+                await SendErrorAsync(AuthStatus.IncorrectPassword);
+                return;
+            }
+
+            var proof = _authentication.ComputeProof()
+                .ToByteArray();
+
+            // TODO: check build number and send back appropriate packet
+            // (assuming WotLK right now, 3.3.5a, build 12340)
+
+            List<byte> data = new List<byte>();
+            data.Add((byte)_currentCommand); // cmd
+            data.Add(0); // error
+            data.AddRange(proof); // server proof
+            data.AddRange(Enumerable.Repeat((byte)0, 4)); //accountFlags
+            data.AddRange(Enumerable.Repeat((byte)0, 4)); //surveyId
+            data.AddRange(Enumerable.Repeat((byte)0, 2)); //unkFlags
+
             await _clientStream.WriteAsync(data.ToArray(), 0, data.Count);
         }
 
@@ -164,12 +186,10 @@ namespace Mimic.RealmServer
             // what we want.
             byte[] data = {
                 (byte)_currentCommand,
-                0x0,
-                0x0,
                 (byte)errorCode
             };
 
-            await _clientStream.WriteAsync(data, 0, 4);
+            await _clientStream.WriteAsync(data, 0, 2);
         }
 
         private async Task CloseAsync(AuthStatus errorCode)
@@ -178,18 +198,6 @@ namespace Mimic.RealmServer
             await Task.Delay(300); // Give the packet some time to be sent
             _client.Close();
             _run = false;
-        }
-
-        private byte[] GetRandomBytes(int count)
-        {
-            var result = new byte[count];
-
-            using (var random = RNGCryptoServiceProvider.Create())
-            {
-                random.GetBytes(result);
-            }
-
-            return result;
         }
     }
 }

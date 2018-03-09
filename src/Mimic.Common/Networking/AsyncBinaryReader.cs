@@ -30,7 +30,7 @@ namespace Mimic.Common
             _closeOnDispose = closeOnDispose;
         }
 
-        private async Task<byte[]> ReadBytesAsync(int count)
+        public async Task<byte[]> ReadBytesAsync(int count)
         {
             var buffer = new byte[count];
 

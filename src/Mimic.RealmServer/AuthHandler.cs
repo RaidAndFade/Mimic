@@ -15,7 +15,7 @@ namespace Mimic.RealmServer
     internal class AuthHandler : ISocketHandler, IDisposable
     {
         private const uint GameName = 0x00_57_6f_57; // 'WoW'
-        private const string TestPassword = "Password";
+        private const string TestPassword = "PASSWORD"; // Password is uppercase
 
         private bool _run = true;
         private TcpClient _client;

@@ -15,13 +15,13 @@ namespace Mimic.RealmServer
     internal class AuthHandler : ISocketHandler, IDisposable
     {
         private const uint GameName = 0x00_57_6f_57; // 'WoW'
-        private const string TestPassword = "TEST:Password";
+        private const string TestPassword = "Password";
 
         private bool _run = true;
         private TcpClient _client;
         private Stream _clientStream;
         private AsyncBinaryReader _reader;
-        private SrpHandler _authentication;
+        private SrpHandler _authentication = new SrpHandler();
 
         private ushort _buildNumber;
 
@@ -98,52 +98,37 @@ namespace Mimic.RealmServer
 
             var accountNameLength = await _reader.ReadUInt8Async();
             var accountName = await _reader.ReadStringAsync(accountNameLength);
+            accountName = accountName.ToUpperInvariant();
 
             using (var sha = SHA1.Create())
             {
-                var pw = Encoding.UTF8.GetBytes(TestPassword);
+                var pw = Encoding.UTF8.GetBytes(
+                    $"{accountName}:{TestPassword}");
                 var hash = sha.ComputeHash(pw);
 
-                _authentication = new SrpHandler(
-                    accountName.ToUpperInvariant(),
-                    hash);
+                _authentication.ComputePrivateFields(accountName, hash);
             }
 
-            var unk3 = _authentication.GenerateRandomNumber(16);
-
-            // TODO: AsyncBinaryWriter?
             List<byte> data = new List<byte>();
 
             data.Add((byte)_currentCommand);
             data.Add(0);
+
             data.Add((byte)AuthStatus.Success);
 
-            // B
-            var publicKey = _authentication.ServerPublicKey.ToByteArray();
-            if (publicKey.Length < 32)
-                Array.Resize(ref publicKey, 32);
+            data.AddRange(_authentication.PublicKey); // B
 
-            data.AddRange(publicKey);
+            data.Add((byte)_authentication.Generator.Length);
+            data.AddRange(_authentication.Generator); // g
 
-            // g
-            var generator = _authentication.Generator.ToByteArray();
-            data.Add((byte)generator.Length);
-            data.AddRange(generator);
+            data.Add((byte)_authentication.SafePrime.Length);
+            data.AddRange(_authentication.SafePrime); // N
 
-            // N
-            var safePrime = _authentication.SafePrime.ToByteArray();
-            data.Add((byte)safePrime.Length);
-            data.AddRange(safePrime);
+            data.AddRange(_authentication.Salt); // s
 
-            // s
-            var salt = _authentication.Salt.ToByteArray();
-            data.AddRange(salt);
+            data.AddRange(Enumerable.Repeat((byte)0, 16));
 
-            // ???
-            data.AddRange(unk3.ToByteArray());
-
-            // security flags
-            data.Add(0);
+            data.Add(0); // security flags;
 
             await _clientStream.WriteAsync(data.ToArray(), 0, data.Count);
         }
@@ -162,8 +147,7 @@ namespace Mimic.RealmServer
                 return;
             }
 
-            var proof = _authentication.ComputeProof()
-                .ToByteArray();
+            var proof = _authentication.ComputeProof();
 
             // TODO: check build number and send back appropriate packet
             // (assuming WotLK right now, 3.3.5a, build 12340)

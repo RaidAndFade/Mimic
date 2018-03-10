@@ -42,10 +42,13 @@ namespace Mimic.RealmServer
                 switch (cmd)
                 {
                     case AuthCommand.LogonChallenge:
-                        await HandleLogonChallenge();
+                        await HandleLogonChallengeAsync();
                         break;
                     case AuthCommand.LogonProof:
-                        await HandleLogonProof();
+                        await HandleLogonProofAsync();
+                        break;
+                    case AuthCommand.RealmList:
+                        await HandleRealmListAsync();
                         break;
                     default:
                         Debug.WriteLine($"Unhandled opcode {cmd} (0x{cmd:X})");
@@ -62,7 +65,7 @@ namespace Mimic.RealmServer
             _client?.Dispose();
         }
 
-        private async Task HandleLogonChallenge()
+        private async Task HandleLogonChallengeAsync()
         {
             var error = await _reader.ReadUInt8Async(); // always 3
             var size = await _reader.ReadUInt16Async();
@@ -133,7 +136,7 @@ namespace Mimic.RealmServer
             await _clientStream.WriteAsync(data.ToArray(), 0, data.Count);
         }
 
-        public async Task HandleLogonProof()
+        public async Task HandleLogonProofAsync()
         {
             var clientPublicKey = await _reader.ReadBytesAsync(32);
             var clientProof = await _reader.ReadBytesAsync(20);
@@ -159,6 +162,42 @@ namespace Mimic.RealmServer
             data.AddRange(Enumerable.Repeat((byte)0, 4)); //accountFlags
             data.AddRange(Enumerable.Repeat((byte)0, 4)); //surveyId
             data.AddRange(Enumerable.Repeat((byte)0, 2)); //unkFlags
+
+            await _clientStream.WriteAsync(data.ToArray(), 0, data.Count);
+        }
+
+        public async Task HandleRealmListAsync()
+        {
+            // 4 empty bytes?
+            uint unknown = await _reader.ReadUInt32Async();
+
+            ushort realmCount = 1000;
+
+            List<byte> realms = new List<byte>();
+            realms.AddRange(BitConverter.GetBytes(0)); // unused/unknown
+            realms.AddRange(BitConverter.GetBytes(realmCount)); // number of realms
+            for (int i = 0; i < realmCount; i++)
+            {
+                realms.Add(0x02); // realm type
+                realms.Add(0x00); // lock (0x00 == unlocked)
+                realms.Add(0x40); // realm flags (0x40 == recommended)
+                realms.AddRange(Encoding.UTF8.GetBytes($"Realm {i}")); // name
+                realms.Add(0); // null-terminator
+                realms.AddRange(Encoding.UTF8.GetBytes("127.0.0.1:1234")); // address
+                realms.Add(0); // null-terminator
+                realms.AddRange(BitConverter.GetBytes(0.5f)); // population level
+                realms.Add(0x00); // number of characters
+                realms.Add(0x01); // timezone
+
+                realms.Add(0x2C); // unknown
+            }
+
+            realms.AddRange(BitConverter.GetBytes((ushort)0x0010)); // unused/unknown
+
+            List<byte> data = new List<byte>();
+            data.Add((byte)AuthCommand.RealmList);
+            data.AddRange(BitConverter.GetBytes((ushort)realms.Count));
+            data.AddRange(realms);
 
             await _clientStream.WriteAsync(data.ToArray(), 0, data.Count);
         }

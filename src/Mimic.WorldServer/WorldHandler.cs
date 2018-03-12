@@ -12,7 +12,7 @@ using Mimic.Common;
 
 namespace Mimic.WorldServer
 {
-    internal class WorldHandler : ISocketHandler, IDisposable
+    public class WorldHandler : ISocketHandler, IDisposable
     {
         private bool _run = true;
         private TcpClient _client;
@@ -20,9 +20,20 @@ namespace Mimic.WorldServer
         private AsyncBinaryReader _reader;
         private BinaryWriter _writer;
         private uint _mseed;
+        public AuthCrypt _ac = new AuthCrypt();
+
+        private byte[] sessionKey = StringToByteArray("210567DD31D09585168D33C25CB6171ACED2C978CB4A0C17C85DCADBD17DAD900468C9AF2A32AD87");
 
         private AuthSession _authsession;
         private WorldCommand _currentCommand;
+
+        public static byte[] StringToByteArray(string hex)
+        {
+            return Enumerable.Range(0, hex.Length)
+                             .Where(x => x % 2 == 0)
+                             .Select(x => Convert.ToByte(hex.Substring(x, 2), 16))
+                             .ToArray();
+        }
 
         public async Task RunAsync(TcpClient client)
         {
@@ -44,41 +55,37 @@ namespace Mimic.WorldServer
 
             while (_run)
             {
-                var lb1 = (await _reader.ReadBytesAsync(1))[0];
-                var lb2 = (await _reader.ReadBytesAsync(1))[0];
+                var lb1 = _ac.decrypt((await _reader.ReadBytesAsync(1)))[0];
+                var lb2 = _ac.decrypt((await _reader.ReadBytesAsync(1)))[0];
                 var len = (lb1 << 8) + lb2;
-                var cmd = (WorldCommand)await _reader.ReadUInt32Async();
-                len -= 6;
+                Debug.WriteLine(lb1 + "|" + lb2);
+                len -= 2;
+                var wp = new WorldPacket(await _reader.ReadBytesAsync(len), this);
+                var cmd = (WorldCommand)wp.ReadInt32();
                 _currentCommand = cmd;
                 Debug.WriteLine("INCOMING COM:" + cmd + " SIZE:" + len);
                 switch (cmd)
                 {
                     case WorldCommand.CMSG_AUTH_SESSION:
-                        await HandleAuthSession(len);
+                        await HandleAuthSession(wp);
                         break;
-
+                    case WorldCommand.CMSG_PING:
+                        await HandlePing(wp);
+                        break;
                     default:
                         break;
                 }
             }
         }
 
-        private async Task<string> readStringAsync()
+        private async Task HandlePing(WorldPacket wp)
         {
-            String s = "";
-            byte cb = 0;
-            while(_clientStream.CanRead)
-            {
-                cb = (byte)await _reader.ReadInt8Async();
-                if (cb == 0) break;
-                s += (char)cb;
-            }
-            return s;
+            Debug.WriteLine(BitConverter.ToString(wp.result()).Replace("-", ""));
         }
 
         private void SendAuthChallenge()
         {
-            WorldPacket wp = new WorldPacket(WorldCommand.SMSG_AUTH_CHALLENGE);
+            WorldPacket wp = new WorldPacket(WorldCommand.SMSG_AUTH_CHALLENGE,this);
             wp.append((UInt32)1);
             wp.append((UInt32)_mseed);
             wp.append((UInt32)0xffeeddcc);
@@ -93,34 +100,53 @@ namespace Mimic.WorldServer
             _writer.Write(res);
         }
 
-        private async Task HandleAuthSession(int len)
+        private async Task HandleAuthSession(WorldPacket wp)
         {
             _authsession = new AuthSession();
-            _authsession.build = await _reader.ReadUInt32Async();
-            _authsession.loginServerId = await _reader.ReadUInt32Async();
-            _authsession.account = await readStringAsync();
-            _authsession.loginServerType = await _reader.ReadUInt32Async();
-            _authsession.localChallenge = await _reader.ReadUInt32Async();
-            _authsession.regionId = await _reader.ReadUInt32Async();
-            _authsession.battlegroupId = await _reader.ReadUInt32Async();
-            _authsession.realmId = await _reader.ReadUInt32Async();
-            _authsession.dosResponse = await _reader.ReadUInt64Async();
-            _authsession.digest = await _reader.ReadBytesAsync(20);
-            len -= 4 + 4 + 4 + 4 + 4 + 4 + 4 + 8 + 20 + _authsession.account.Length;
-            Debug.WriteLine(BitConverter.ToString(_authsession.digest).Replace("-", ""));
-            Debug.WriteLine(len);
-            try
-            {
-                _authsession.addonInfo = await _reader.ReadBytesAsync(len);
-            }catch(Exception e)
-            {
-                Debug.WriteLine(e);
-            }
+            _authsession.build = wp.ReadUInt32();
+            _authsession.loginServerId = wp.ReadUInt32();
+            _authsession.account = wp.ReadString();
+            _authsession.loginServerType = wp.ReadUInt32();
+            _authsession.localChallenge = wp.ReadUInt32();
+            _authsession.regionId = wp.ReadUInt32();
+            _authsession.battlegroupId = wp.ReadUInt32();
+            _authsession.realmId = wp.ReadUInt32();
+            _authsession.dosResponse = wp.ReadUInt64();
+            _authsession.digest = wp.ReadBytes(20);
+            _authsession.addonInfo = wp.ReadBytes(wp.Length-wp._rpos);
             //_authsession.unk0 = await _reader.ReadBytesAsync(len);
 
+            _ac = new AuthCrypt(sessionKey);
 
             Debug.WriteLine("Client <"+_authsession.account+"> authed on build "+_authsession.build+"(0x1ED)");
             // Debug.WriteLine(_authsession);
+
+            WorldPacket pck = new WorldPacket(WorldCommand.SMSG_AUTH_RESPONSE, this);
+
+            SHA1 s = SHA1.Create();
+            List<byte> i = new List<byte>();
+            i.AddRange(Encoding.ASCII.GetBytes(_authsession.account));
+            i.AddRange(BitConverter.GetBytes((UInt32)0));
+            i.AddRange(BitConverter.GetBytes(_authsession.localChallenge));
+            i.AddRange(BitConverter.GetBytes(_mseed));
+            i.AddRange(sessionKey);
+            byte[] d = s.ComputeHash(i.ToArray());
+
+
+            if (d != _authsession.digest) //authed
+            {
+                Debug.WriteLine(BitConverter.ToString(d).Replace("-", ""));
+                Debug.WriteLine(BitConverter.ToString(_authsession.digest).Replace("-", ""));
+                Debug.WriteLine("Didn't auth properly");
+                pck.append((byte)14);
+            }
+            else
+            {
+                byte[] res = { 0x0C, 0x30, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02 };
+                pck.append(res);
+            }
+
+            _writer.Write(pck.result());
         }
 
         public void Dispose()
@@ -128,68 +154,6 @@ namespace Mimic.WorldServer
             _reader?.Dispose();
             _clientStream?.Dispose();
             _client?.Dispose();
-        }
-
-        private async Task HandleLogonChallengeAsync()
-        {
-          /*  var error = await _reader.ReadUInt8Async(); // always 3
-            var size = await _reader.ReadUInt16Async();
-
-            if (_client.Available < size)
-            {
-                await CloseAsync(AuthStatus.ProtocolError);
-                return;
-            }
-
-            var gameName = await _reader.ReadUInt32Async();
-
-            if (gameName != GameName)
-            {
-                await CloseAsync(AuthStatus.ProtocolError);
-                return;
-            }
-
-            var versionMajor = await _reader.ReadUInt8Async();
-            var versionMinor = await _reader.ReadUInt8Async();
-            var versionPatch = await _reader.ReadUInt8Async();
-
-            _buildNumber = await _reader.ReadUInt16Async();
-
-            var platform = (Architecture)await _reader.ReadUInt32Async();
-            var os = (OperatingSystem)await _reader.ReadUInt32Async();
-            var locale = (Locale)await _reader.ReadUInt32Async();
-
-            var timezoneBias = await _reader.ReadUInt32Async();
-
-            var ipAddress = new IPAddress(await _reader.ReadUInt32Async());
-            var realAddress = (_client.Client.RemoteEndPoint as IPEndPoint).Address;
-
-            var accountNameLength = await _reader.ReadUInt8Async();
-            var accountName = await _reader.ReadStringAsync(accountNameLength);
-            accountName = accountName.ToUpperInvariant();
-
-            List<byte> data = new List<byte>();
-
-            data.Add((byte)_currentCommand);
-            data.Add(0);
-
-            data.Add((byte)AuthStatus.Success);
-
-            data.AddRange(_authentication.PublicKey); // B
-
-            data.Add((byte)_authentication.Generator.Length);
-            data.AddRange(_authentication.Generator); // g
-
-            data.Add((byte)_authentication.SafePrime.Length);
-            data.AddRange(_authentication.SafePrime); // N
-
-            data.AddRange(_authentication.Salt); // s
-
-            data.AddRange(Enumerable.Repeat((byte)0, 16));
-
-            data.Add(0); // security flags;
-
-            await _clientStream.WriteAsync(data.ToArray(), 0, data.Count);*/
         }
 
         private class AuthSession

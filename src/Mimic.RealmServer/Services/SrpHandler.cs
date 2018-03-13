@@ -170,7 +170,7 @@ namespace Mimic.RealmServer
             return new BigInteger(data);
         }
 
-        private static BigInteger BigIntFromHexString(string hex)
+        public static BigInteger BigIntFromHexString(string hex)
             => BigInteger.Parse($"00{hex}", NumberStyles.HexNumber);
 
         public static BigInteger BigIntFromByteArray(byte[] bytes)

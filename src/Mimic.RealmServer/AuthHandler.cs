@@ -16,7 +16,6 @@ namespace Mimic.RealmServer
     internal class AuthHandler : ISocketHandler, IDisposable
     {
         private const uint GameName = 0x00_57_6f_57; // 'WoW'
-        private const string TestPassword = "RAID"; // Password is uppercase
 
         private bool _run = true;
         private TcpClient _client;
@@ -28,10 +27,13 @@ namespace Mimic.RealmServer
 
         private AuthCommand _currentCommand;
 
-        private string accountName;
+        private AccountInfo _info;
+
+        private byte[] reconnectCheck;
 
         public async Task RunAsync(TcpClient client)
         {
+            Debug.WriteLine("New Connection");
             _client = client;
             _client.ReceiveTimeout = 1000;
 
@@ -110,17 +112,16 @@ namespace Mimic.RealmServer
             var realAddress = (_client.Client.RemoteEndPoint as IPEndPoint).Address;
 
             var accountNameLength = await _reader.ReadUInt8Async();
-            accountName = await _reader.ReadStringAsync(accountNameLength);
+            var accountName = await _reader.ReadStringAsync(accountNameLength);
             accountName = accountName.ToUpperInvariant();
 
-            using (var sha = SHA1.Create())
-            {
-                var pw = Encoding.UTF8.GetBytes(
-                    $"{accountName}:{TestPassword}");
-                var hash = sha.ComputeHash(pw);
+            _info = await Program.authDatabase.AsyncFetchAccountByName(accountName);
 
-                _authentication.ComputePrivateFields(accountName, hash);
-            }
+            _info.last_ip = realAddress.Address.ToString();
+            _info.os = os.ToString();
+            //_info.locale = (int)locale; <not the same>
+
+            _authentication.ComputePrivateFields(accountName, MimicUtils.HexStringToByteArray(_info.pass_hash));
 
             List<byte> data = new List<byte>();
 
@@ -182,20 +183,28 @@ namespace Mimic.RealmServer
             var realAddress = (_client.Client.RemoteEndPoint as IPEndPoint).Address;
 
             var accountNameLength = await _reader.ReadUInt8Async();
-            accountName = await _reader.ReadStringAsync(accountNameLength);
+            var accountName = await _reader.ReadStringAsync(accountNameLength);
             accountName = accountName.ToUpperInvariant();
-            
+
+            _info = await Program.authDatabase.AsyncFetchAccountByName(accountName);
+            _info.last_ip = realAddress.Address.ToString();
+            _info.os = os.ToString();
+            //_info.locale = (int)locale; wrong number
+
+            _authentication.ComputePrivateFields(accountName, MimicUtils.HexStringToByteArray(_info.pass_hash));
+            _authentication._K = SrpHandler.BigIntFromHexString(_info.sessionkey);
+
             List<byte> data = new List<byte>();
 
             data.Add((byte)_currentCommand);
 
             data.Add((byte)AuthStatus.Success);
 
-            data.AddRange(Enumerable.Repeat((byte)0xfe, 16));
+            reconnectCheck = new byte[16];
+            new Random().NextBytes(reconnectCheck);
+            data.AddRange(reconnectCheck);
 
             data.AddRange(Enumerable.Repeat((byte)0, 16));
-
-            data.Add(0); // security flags;
 
             await _clientStream.WriteAsync(data.ToArray(), 0, data.Count);
         }
@@ -219,6 +228,9 @@ namespace Mimic.RealmServer
 
             var proof = _authentication.ComputeProof(); 
 
+            _info.sessionkey = _authentication._K.ToString("x");
+            Program.authDatabase.AsyncUpdateAccount(_info);
+
             // TODO: check build number and send back appropriate packet
             // (assuming WotLK right now, 3.3.5a, build 12340)
 
@@ -229,7 +241,6 @@ namespace Mimic.RealmServer
             data.AddRange(Enumerable.Repeat((byte)0, 4)); //accountFlags
             data.AddRange(Enumerable.Repeat((byte)0, 4)); //surveyId
             data.AddRange(Enumerable.Repeat((byte)0, 2)); //unkFlags
-
             await _clientStream.WriteAsync(data.ToArray(), 0, data.Count);
         }
 
@@ -239,9 +250,8 @@ namespace Mimic.RealmServer
             var R2 = await _reader.ReadBytesAsync(20);
             var R3 = await _reader.ReadBytesAsync(20);
             var keyCount = await _reader.ReadUInt8Async();
-            byte[] proof = Enumerable.Repeat((byte)0xfe, 16).ToArray();
 
-            Debug.WriteLine("RPROOF FROM "+accountName);
+            Debug.WriteLine("RPROOF FROM "+_info.username);
             try{
             //_authentication.Authenticate(R1, R2);
             //_authentication.ComputeProof();
@@ -251,9 +261,9 @@ namespace Mimic.RealmServer
 
             SHA1 sh = SHA1.Create();
             sh.Initialize();
-            sh.TransformBlock(Encoding.Default.GetBytes(accountName),0,accountName.Length,Encoding.Default.GetBytes(accountName),0);
+            sh.TransformBlock(Encoding.Default.GetBytes(_info.username),0, _info.username.Length,Encoding.Default.GetBytes(_info.username),0);
             sh.TransformBlock(R1,0,R1.Length,R1,0);
-            sh.TransformBlock(proof,0,proof.Length,proof,0);
+            sh.TransformBlock(reconnectCheck,0,reconnectCheck.Length,reconnectCheck,0);
             Debug.WriteLine(_authentication._K.ToByteArray());
             byte[] sessKey = SrpHandler.BigIntToByteArray(_authentication._K,40);
             sh.TransformBlock(sessKey,0,sessKey.Length,sessKey,0);
@@ -263,6 +273,8 @@ namespace Mimic.RealmServer
 
             Debug.WriteLine(BitConverter.ToString(hash).Replace("-", ""));
             Debug.WriteLine(BitConverter.ToString(R2).Replace("-", ""));
+
+            Program.authDatabase.AsyncUpdateAccount(_info);
 
             List<byte> pktdata = new List<byte>();
             pktdata.Add((byte)AuthCommand.ReconnectProof);
@@ -277,16 +289,15 @@ namespace Mimic.RealmServer
             // 4 empty bytes?
             uint unknown = await _reader.ReadUInt32Async();
 
-            ushort realmCount = 10;
-
             List<byte> realms = new List<byte>();
             realms.AddRange(BitConverter.GetBytes(0)); // unused/unknown
-            realms.AddRange(BitConverter.GetBytes(1)); // number of realms
+            realms.AddRange(BitConverter.GetBytes((ushort)1)); // number of realms
+
 
             realms.Add(0x02); // realm type
             realms.Add(0x00); // lock (0x00 == unlocked)
             realms.Add(0x40); // realm flags (0x40 == recommended)
-            realms.AddRange(Encoding.UTF8.GetBytes("TestRealm")); // name
+            realms.AddRange(Encoding.UTF8.GetBytes("Test")); // name
             realms.Add(0); // null-terminator
             realms.AddRange(Encoding.UTF8.GetBytes("99.228.169.83:8085")); // address
             realms.Add(0); // null-terminator

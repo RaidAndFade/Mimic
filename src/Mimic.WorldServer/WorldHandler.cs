@@ -22,7 +22,7 @@ namespace Mimic.WorldServer
         private uint _mseed;
         public AuthCrypt _ac = new AuthCrypt();
 
-        private byte[] sessionKey = StringToByteArray("210567DD31D09585168D33C25CB6171ACED2C978CB4A0C17C85DCADBD17DAD900468C9AF2A32AD87");
+        private byte[] sessionKey = StringToByteArray("24243EE262E0377B8C591C2FDEA8BF6C76EC830693287631D1AEED31DE167EBABBE90491E06EF345");
 
         private AuthSession _authsession;
         private WorldCommand _currentCommand;
@@ -41,9 +41,10 @@ namespace Mimic.WorldServer
             var ipaddr = ((IPEndPoint)client.Client.RemoteEndPoint).Address.ToString();
             _client.ReceiveTimeout = 1000;
 
-            var seedArr = new Byte[4];
+            var seedArr = new byte[4];
             new Random().NextBytes(seedArr);
             _mseed = BitConverter.ToUInt32(seedArr,0);
+            Debug.WriteLine(_mseed);
 
             _clientStream = _client.GetStream();
             _reader = new AsyncBinaryReader(_clientStream);
@@ -107,7 +108,7 @@ namespace Mimic.WorldServer
             _authsession.loginServerId = wp.ReadUInt32();
             _authsession.account = wp.ReadString();
             _authsession.loginServerType = wp.ReadUInt32();
-            _authsession.localChallenge = wp.ReadUInt32();
+            _authsession.localChallenge = wp.ReadBytes(4, true);
             _authsession.regionId = wp.ReadUInt32();
             _authsession.battlegroupId = wp.ReadUInt32();
             _authsession.realmId = wp.ReadUInt32();
@@ -119,6 +120,7 @@ namespace Mimic.WorldServer
             _ac = new AuthCrypt(sessionKey);
 
             Debug.WriteLine("Client <"+_authsession.account+"> authed on build "+_authsession.build+"(0x1ED)");
+            Debug.WriteLine(BitConverter.ToString(_authsession.localChallenge).Replace("-", ""));
             // Debug.WriteLine(_authsession);
 
             WorldPacket pck = new WorldPacket(WorldCommand.SMSG_AUTH_RESPONSE, this);
@@ -126,8 +128,8 @@ namespace Mimic.WorldServer
             SHA1 s = SHA1.Create();
             List<byte> i = new List<byte>();
             i.AddRange(Encoding.ASCII.GetBytes(_authsession.account));
-            i.AddRange(BitConverter.GetBytes((UInt32)0));
-            i.AddRange(BitConverter.GetBytes(_authsession.localChallenge));
+            i.AddRange(BitConverter.GetBytes((uint)0));
+            i.AddRange(_authsession.localChallenge);
             i.AddRange(BitConverter.GetBytes(_mseed));
             i.AddRange(sessionKey);
             byte[] d = s.ComputeHash(i.ToArray());
@@ -160,7 +162,8 @@ namespace Mimic.WorldServer
         {
             public UInt32 build, loginServerId;
             public String account;
-            public UInt32 loginServerType, localChallenge, regionId, battlegroupId, realmId;
+            public byte[] localChallenge;
+            public UInt32 loginServerType, regionId, battlegroupId, realmId;
             public UInt64 dosResponse;
             public byte[] digest, addonInfo;
         }

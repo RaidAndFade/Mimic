@@ -32,6 +32,7 @@ namespace Mimic.Common
 
         public async Task<byte[]> ReadBytesAsync(int count)
         {
+            if(!_underlyingStream.CanRead) return null;
             var buffer = new byte[count];
 
             var bytesRead = await _underlyingStream.ReadAsync(buffer, 0, count)

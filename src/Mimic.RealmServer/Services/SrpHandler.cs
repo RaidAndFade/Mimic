@@ -27,7 +27,7 @@ namespace Mimic.RealmServer
         private BigInteger _b; // server private key
         private BigInteger _B; // server public key
         private BigInteger _A; // client public key
-        private BigInteger _K; // strong session key
+        public BigInteger _K; // strong session key
         private BigInteger _M1; // client proof
 
         public byte[] PublicKey
@@ -173,13 +173,13 @@ namespace Mimic.RealmServer
         private static BigInteger BigIntFromHexString(string hex)
             => BigInteger.Parse($"00{hex}", NumberStyles.HexNumber);
 
-        private static BigInteger BigIntFromByteArray(byte[] bytes)
+        public static BigInteger BigIntFromByteArray(byte[] bytes)
         {
             Array.Resize(ref bytes, bytes.Length + 1); // force MSB = 0
             return new BigInteger(bytes);
         }
 
-        private static byte[] BigIntToByteArray(BigInteger value,
+        public static byte[] BigIntToByteArray(BigInteger value,
             int minNumBytes = 0)
         {
             var result = value.ToByteArray();

@@ -19,21 +19,13 @@ namespace Mimic.WorldServer
         private Stream _clientStream;
         private AsyncBinaryReader _reader;
         private BinaryWriter _writer;
-        private uint _mseed;
+        private byte[] _mseed;
         public AuthCrypt _ac = new AuthCrypt();
 
-        private byte[] sessionKey = StringToByteArray("24243EE262E0377B8C591C2FDEA8BF6C76EC830693287631D1AEED31DE167EBABBE90491E06EF345");
+        private AccountInfo _info;
 
         private AuthSession _authsession;
-        private WorldCommand _currentCommand;
 
-        public static byte[] StringToByteArray(string hex)
-        {
-            return Enumerable.Range(0, hex.Length)
-                             .Where(x => x % 2 == 0)
-                             .Select(x => Convert.ToByte(hex.Substring(x, 2), 16))
-                             .ToArray();
-        }
 
         public async Task RunAsync(TcpClient client)
         {
@@ -43,8 +35,7 @@ namespace Mimic.WorldServer
 
             var seedArr = new byte[4];
             new Random().NextBytes(seedArr);
-            _mseed = BitConverter.ToUInt32(seedArr,0);
-            Debug.WriteLine(_mseed);
+            _mseed = seedArr;
 
             _clientStream = _client.GetStream();
             _reader = new AsyncBinaryReader(_clientStream);
@@ -59,11 +50,9 @@ namespace Mimic.WorldServer
                 var lb1 = _ac.decrypt((await _reader.ReadBytesAsync(1)))[0];
                 var lb2 = _ac.decrypt((await _reader.ReadBytesAsync(1)))[0];
                 var len = (lb1 << 8) + lb2;
-                Debug.WriteLine(lb1 + "|" + lb2);
-                len -= 2;
+                Debug.WriteLine(lb1 + "|" + lb2+" ->| "+len);
                 var wp = new WorldPacket(await _reader.ReadBytesAsync(len), this);
                 var cmd = (WorldCommand)wp.ReadInt32();
-                _currentCommand = cmd;
                 Debug.WriteLine("INCOMING COM:" + cmd + " SIZE:" + len);
                 switch (cmd)
                 {
@@ -81,14 +70,18 @@ namespace Mimic.WorldServer
 
         private async Task HandlePing(WorldPacket wp)
         {
-            Debug.WriteLine(BitConverter.ToString(wp.result()).Replace("-", ""));
+            uint ping = wp.ReadUInt32();
+            uint latency = wp.ReadUInt32();
+            WorldPacket pck = new WorldPacket(WorldCommand.SMSG_PONG,this);
+            pck.append(ping);
+            _writer.Write(pck.result());
         }
 
         private void SendAuthChallenge()
         {
             WorldPacket wp = new WorldPacket(WorldCommand.SMSG_AUTH_CHALLENGE,this);
             wp.append((UInt32)1);
-            wp.append((UInt32)_mseed);
+            wp.append(_mseed);
             wp.append((UInt32)0xffeeddcc);
             wp.append((UInt32)0xdeadbeef);
             wp.append((UInt32)0x00babe00);
@@ -117,25 +110,30 @@ namespace Mimic.WorldServer
             _authsession.addonInfo = wp.ReadBytes(wp.Length-wp._rpos);
             //_authsession.unk0 = await _reader.ReadBytesAsync(len);
 
-            _ac = new AuthCrypt(sessionKey);
+            _info = await Program.authDatabase.AsyncFetchAccountByName(_authsession.account);
+            var sessionKey = MimicUtils.HexStringToByteArray(_info.sessionkey,40);
+            Debug.WriteLine(_info.sessionkey);
 
-            Debug.WriteLine("Client <"+_authsession.account+"> authed on build "+_authsession.build+"(0x1ED)");
-            Debug.WriteLine(BitConverter.ToString(_authsession.localChallenge).Replace("-", ""));
+            _ac = new AuthCrypt(sessionKey);
             // Debug.WriteLine(_authsession);
 
+
+            SHA1 sh = SHA1.Create();
+            sh.Initialize();
+            byte[] username = Encoding.UTF8.GetBytes(_authsession.account);
+            sh.TransformBlock(username,0, username.Length,username,0);
+            byte[] pad = new byte[4];
+            sh.TransformBlock(pad,0, pad.Length,pad,0);
+            byte[] localChal = _authsession.localChallenge;
+            sh.TransformBlock(localChal,0,localChal.Length,localChal,0);
+            sh.TransformBlock(_mseed,0,_mseed.Length,_mseed,0);
+            sh.TransformBlock(sessionKey,0,sessionKey.Length,sessionKey,0);
+            byte[] zer = new byte[0];
+            sh.TransformFinalBlock(zer,0,0);
+            byte[] d = sh.Hash;
+
             WorldPacket pck = new WorldPacket(WorldCommand.SMSG_AUTH_RESPONSE, this);
-
-            SHA1 s = SHA1.Create();
-            List<byte> i = new List<byte>();
-            i.AddRange(Encoding.ASCII.GetBytes(_authsession.account));
-            i.AddRange(BitConverter.GetBytes((uint)0));
-            i.AddRange(_authsession.localChallenge);
-            i.AddRange(BitConverter.GetBytes(_mseed));
-            i.AddRange(sessionKey);
-            byte[] d = s.ComputeHash(i.ToArray());
-
-
-            if (d != _authsession.digest) //authed
+            if (!d.SequenceEqual(_authsession.digest)) //Didn't auth properly
             {
                 Debug.WriteLine(BitConverter.ToString(d).Replace("-", ""));
                 Debug.WriteLine(BitConverter.ToString(_authsession.digest).Replace("-", ""));
@@ -144,11 +142,12 @@ namespace Mimic.WorldServer
             }
             else
             {
-                byte[] res = { 0x0C, 0x30, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02 };
-                pck.append(res);
+                Debug.WriteLine("Client <"+_authsession.account+"> authed on build "+_authsession.build+" (0x1ED)");
+                pck.append((byte)12);
             }
 
-            _writer.Write(pck.result());
+            byte[] pdata = pck.result();
+            _writer.Write(pdata);
         }
 
         public void Dispose()

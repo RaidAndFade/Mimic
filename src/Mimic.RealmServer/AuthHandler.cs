@@ -117,11 +117,13 @@ namespace Mimic.RealmServer
 
             _info = await Program.authDatabase.AsyncFetchAccountByName(accountName);
 
-            _info.last_ip = realAddress.Address.ToString();
+            _info.last_ip = realAddress.ToString();
+            //_info.last_login = new DateTime().ToUniversalTime().ToString();
             _info.os = os.ToString();
             //_info.locale = (int)locale; <not the same>
 
-            _authentication.ComputePrivateFields(accountName, MimicUtils.HexStringToByteArray(_info.pass_hash));
+            byte[] passhash = MimicUtils.HexStringToByteArray(_info.pass_hash);
+            _authentication.ComputePrivateFields(accountName, passhash);
 
             List<byte> data = new List<byte>();
 
@@ -187,11 +189,13 @@ namespace Mimic.RealmServer
             accountName = accountName.ToUpperInvariant();
 
             _info = await Program.authDatabase.AsyncFetchAccountByName(accountName);
-            _info.last_ip = realAddress.Address.ToString();
+            _info.last_ip = realAddress.ToString();
+            _info.last_login = new DateTime().ToUniversalTime().ToString();
             _info.os = os.ToString();
             //_info.locale = (int)locale; wrong number
 
-            _authentication.ComputePrivateFields(accountName, MimicUtils.HexStringToByteArray(_info.pass_hash));
+            byte[] passhash = MimicUtils.HexStringToByteArray(_info.pass_hash);
+            _authentication.ComputePrivateFields(accountName, passhash);
             _authentication._K = SrpHandler.BigIntFromHexString(_info.sessionkey);
 
             List<byte> data = new List<byte>();

@@ -22,14 +22,16 @@ namespace Mimic.RealmServer
         private readonly SHA1 _sha;
 
         private string _I; // identifying username
-        private BigInteger _s; // salt
-        private BigInteger _v; // password verifier
+        public BigInteger _s; // salt
+        public BigInteger _v; // password verifier
         private BigInteger _b; // server private key
         private BigInteger _B; // server public key
         private BigInteger _A; // client public key
         public BigInteger _K; // strong session key
         private BigInteger _M1; // client proof
 
+        public byte[] SessionKey
+            => BigIntToByteArray(_K,40);
         public byte[] PublicKey
             => BigIntToByteArray(_B);
         public byte[] Generator
@@ -52,7 +54,7 @@ namespace Mimic.RealmServer
         }
 
 
-        public void ComputePrivateFields(string username, byte[] passwordHash)
+        public void ComputePrivateFields(string username, byte[] passwordHash, BigInteger salt, BigInteger verify)
         {
             if (passwordHash.Length < PasswordHashLength)
                 throw new ArgumentException(
@@ -60,14 +62,20 @@ namespace Mimic.RealmServer
                     nameof(passwordHash));
 
             _I = username;
-            _s = BigIntFromRandom(32);
+            if(salt == BigInteger.Zero){
+                _s = BigIntFromRandom(32);
+                var x = BigIntFromByteArray(HashArrays(
+                    BigIntToByteArray(_s),
+                    passwordHash
+                ));
+                _v = BigInteger.ModPow(_g, x, _N);
+            }
+            else{
+                _s = salt;
+                _v = verify;
+            }
 
-            var x = BigIntFromByteArray(HashArrays(
-                BigIntToByteArray(_s),
-                passwordHash
-            ));
 
-            _v = BigInteger.ModPow(_g, x, _N);
             _b = BigIntFromRandom(19);
             _B = ((_v * 3) + BigInteger.ModPow(_g, _b, _N)) % _N;
         }

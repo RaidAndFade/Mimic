@@ -123,7 +123,15 @@ namespace Mimic.RealmServer
             //_info.locale = (int)locale; <not the same>
 
             byte[] passhash = MimicUtils.HexStringToByteArray(_info.pass_hash);
-            _authentication.ComputePrivateFields(accountName, passhash);
+            BigInteger s,v;
+            if(_info.s!=""){        
+                s = SrpHandler.BigIntFromHexString(_info.s);
+                v = SrpHandler.BigIntFromHexString(_info.v);
+            }else{
+                s = BigInteger.Zero;
+                v = BigInteger.Zero;
+            }
+            _authentication.ComputePrivateFields(accountName, passhash, s, v);
 
             List<byte> data = new List<byte>();
 
@@ -194,8 +202,17 @@ namespace Mimic.RealmServer
             _info.os = os.ToString();
             //_info.locale = (int)locale; wrong number
 
+
             byte[] passhash = MimicUtils.HexStringToByteArray(_info.pass_hash);
-            _authentication.ComputePrivateFields(accountName, passhash);
+            BigInteger s,v;
+            if(_info.s!=""){        
+                s = SrpHandler.BigIntFromHexString(_info.s);
+                v = SrpHandler.BigIntFromHexString(_info.v);
+            }else{
+                s = BigInteger.Zero;
+                v = BigInteger.Zero;
+            }
+            _authentication.ComputePrivateFields(accountName, passhash, s, v);
             _authentication._K = SrpHandler.BigIntFromHexString(_info.sessionkey);
 
             List<byte> data = new List<byte>();
@@ -233,6 +250,8 @@ namespace Mimic.RealmServer
             var proof = _authentication.ComputeProof(); 
 
             _info.sessionkey = _authentication._K.ToString("x");
+            _info.s = _authentication._s.ToString("x");
+            _info.v = _authentication._v.ToString("x");
             Program.authDatabase.AsyncUpdateAccount(_info);
 
             // TODO: check build number and send back appropriate packet
@@ -268,8 +287,8 @@ namespace Mimic.RealmServer
             sh.TransformBlock(Encoding.Default.GetBytes(_info.username),0, _info.username.Length,Encoding.Default.GetBytes(_info.username),0);
             sh.TransformBlock(R1,0,R1.Length,R1,0);
             sh.TransformBlock(reconnectCheck,0,reconnectCheck.Length,reconnectCheck,0);
-            Debug.WriteLine(_authentication._K.ToByteArray());
-            byte[] sessKey = SrpHandler.BigIntToByteArray(_authentication._K,40);
+            Debug.WriteLine(_authentication.SessionKey);
+            byte[] sessKey = _authentication.SessionKey;
             sh.TransformBlock(sessKey,0,sessKey.Length,sessKey,0);
             byte[] zer = new byte[0];
             sh.TransformFinalBlock(zer,0,0);

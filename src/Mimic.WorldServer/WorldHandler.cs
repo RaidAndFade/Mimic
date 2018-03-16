@@ -15,17 +15,20 @@ namespace Mimic.WorldServer
     public class WorldHandler : ISocketHandler, IDisposable
     {
         private bool _run = true;
-        private TcpClient _client;
-        private Stream _clientStream;
-        private AsyncBinaryReader _reader;
-        private BinaryWriter _writer;
+        public TcpClient _client;
+        public Stream _clientStream;
+        public AsyncBinaryReader _reader;
+        public BinaryWriter _writer;
         private byte[] _mseed;
         public AuthCrypt _ac = new AuthCrypt();
+
+        public WorldSession _session;
 
         private AccountInfo _info;
 
         private AuthSession _authsession;
 
+        private AuthStatus _status;
 
         public async Task RunAsync(TcpClient client)
         {
@@ -40,6 +43,7 @@ namespace Mimic.WorldServer
             _clientStream = _client.GetStream();
             _reader = new AsyncBinaryReader(_clientStream);
             _writer = new BinaryWriter(_clientStream);
+            _status = AuthStatus.UNAUTHED;
 
             Debug.WriteLine("Connection from " + ipaddr);
 
@@ -52,23 +56,37 @@ namespace Mimic.WorldServer
                 var len = (lb1 << 8) + lb2;
                 Debug.WriteLine(lb1 + "|" + lb2+" ->| "+len);
                 var wp = new WorldPacket(await _reader.ReadBytesAsync(len), this);
-                var cmd = (WorldCommand)wp.ReadInt32();
-                Debug.WriteLine("INCOMING COM:" + cmd + " SIZE:" + len);
-                switch (cmd)
+                Debug.WriteLine("INCOMING COM:" + wp.cmd + " SIZE:" + len);
+                switch (wp.cmd)
                 {
                     case WorldCommand.CMSG_AUTH_SESSION:
                         await HandleAuthSession(wp);
                         break;
                     case WorldCommand.CMSG_PING:
-                        await HandlePing(wp);
+                        if(_status != AuthStatus.AUTHED) //Should not be pinging if not authed
+                            Close();
+                        else
+                            HandlePing(wp);
                         break;
                     default:
+                        if(_session == null || _status == AuthStatus.UNAUTHED) //Should not be sending anything else right now. Should also be authed by now
+                            Close();
+                        else 
+                            _session.HandlePacket(wp);
                         break;
                 }
             }
         }
 
-        private async Task HandlePing(WorldPacket wp)
+        public void Close(){
+            _reader.Dispose();
+            _writer.Flush();
+            _writer.Close();
+            _clientStream.Close();
+            _client.Close();
+        }
+
+        private void HandlePing(WorldPacket wp)
         {
             uint ping = wp.ReadUInt32();
             uint latency = wp.ReadUInt32();
@@ -117,6 +135,9 @@ namespace Mimic.WorldServer
             _ac = new AuthCrypt(sessionKey);
             // Debug.WriteLine(_authsession);
 
+            _session = new WorldSession(_info.id,_info.username,this,_info);
+            _session.ReadAddonsInfo(_authsession.addonInfo);
+
 
             SHA1 sh = SHA1.Create();
             sh.Initialize();
@@ -139,15 +160,24 @@ namespace Mimic.WorldServer
                 Debug.WriteLine(BitConverter.ToString(_authsession.digest).Replace("-", ""));
                 Debug.WriteLine("Didn't auth properly");
                 pck.append((byte)14);
+                Close();
             }
             else
             {
                 Debug.WriteLine("Client <"+_authsession.account+"> authed on build "+_authsession.build+" (0x1ED)");
                 pck.append((byte)12);
+                pck.append(0);
+                pck.append((byte)0);
+                pck.append(0);
+                pck.append((byte)2);
+                _status = AuthStatus.AUTHED;
             }
+
 
             byte[] pdata = pck.result();
             _writer.Write(pdata);
+
+            var _ = _session.InitSession();
         }
 
         public void Dispose()

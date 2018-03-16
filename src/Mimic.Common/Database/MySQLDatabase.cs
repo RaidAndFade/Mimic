@@ -22,6 +22,9 @@ namespace Mimic.Common
             //don't hardcode these
             MySqlCommand createAccountsTblCmd = new MySqlCommand("CREATE TABLE IF NOT EXISTS `accounts` (`id` INT(11) NOT NULL AUTO_INCREMENT,`username` VARCHAR(255) NOT NULL DEFAULT '',`pass_hash` VARCHAR(255) NOT NULL DEFAULT '',`sessionkey` varchar(255) NOT NULL DEFAULT '',`v` varchar(255) NOT NULL DEFAULT '',`s` varchar(255) NOT NULL DEFAULT '',`token_key` varchar(255) NOT NULL DEFAULT '',`email` varchar(255) NOT NULL DEFAULT '',`join_date` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,`last_ip` varchar(255) NOT NULL DEFAULT '',`last_login` varchar(255) NOT NULL DEFAULT '',`failed_logins` INT(11) NOT NULL DEFAULT '0',`locked` BIT(1) NOT NULL DEFAULT b'0',`lock_country` varchar(255) NOT NULL DEFAULT '',`online` BIT(1) NOT NULL DEFAULT b'0',`locale` SMALLINT(6) NOT NULL DEFAULT '0',`os` varchar(255) NOT NULL DEFAULT '',PRIMARY KEY (`id`),UNIQUE INDEX `username` (`username`))COLLATE='utf8_general_ci'ENGINE=MyISAM;", conn);
             createAccountsTblCmd.ExecuteNonQuery();
+
+            MySqlCommand createTutorialTblCmd = new MySqlCommand("CREATE TABLE IF NOT EXISTS `account_tutorial` (`id` INT(11) NOT NULL,`tut0` INT(11) NOT NULL DEFAULT '0',`tut1` INT(11) NOT NULL DEFAULT '0',`tut2` INT(11) NOT NULL DEFAULT '0',`tut3` INT(11) NOT NULL DEFAULT '0',`tut4` INT(11) NOT NULL DEFAULT '0',`tut5` INT(11) NOT NULL DEFAULT '0',`tut6` INT(11) NOT NULL DEFAULT '0',`tut7` INT(11) NOT NULL DEFAULT '0',PRIMARY KEY (`id`))ENGINE=MyISAM;",conn);
+            createTutorialTblCmd.ExecuteNonQuery();
         }
 
         public async Task init()
@@ -31,7 +34,7 @@ namespace Mimic.Common
         {
             AccountInfo info = new AccountInfo();
 
-            MySqlCommand cmd = new MySqlCommand("SELECT * FROM `accounts` WHERE `id`=@id",conn);
+            MySqlCommand cmd = new MySqlCommand("SELECT * FROM `accounts` WHERE `id`=@id LIMIT 1;",conn);
             cmd.Parameters.AddWithValue("id", id);
 
             using(var reader = await cmd.ExecuteReaderAsync()){
@@ -67,7 +70,7 @@ namespace Mimic.Common
         {
             AccountInfo info = new AccountInfo();
 
-            MySqlCommand cmd = new MySqlCommand("SELECT * FROM `accounts` WHERE `username`=@name",conn);
+            MySqlCommand cmd = new MySqlCommand("SELECT * FROM `accounts` WHERE `username`=@name LIMIT 1;",conn);
             cmd.Parameters.AddWithValue("name", name);
 
             using(var reader = await cmd.ExecuteReaderAsync()){
@@ -98,9 +101,36 @@ namespace Mimic.Common
                 }
             }
         }
+
+        public async Task<uint[]> AsyncFetchTutorialFlags(int id){
+            MySqlCommand cmd = new MySqlCommand("SELECT `tut0`,`tut1`,`tut2`,`tut3`,`tut4`,`tut5`,`tut6`,`tut7` FROM `account_tutorial` WHERE `id`=@id LIMIT 1;",conn);
+            cmd.Parameters.AddWithValue("id",id);
+            using(var reader = await cmd.ExecuteReaderAsync()){
+                if(await reader.ReadAsync()){
+                    uint[] flags = new uint[8];
+                    for(int i=0;i<8;i++){
+                        flags[i] = (uint)reader.GetInt32(i);
+                    }
+                    return flags;
+                }else{
+                    return null;
+                }
+            }
+        }
+
+        public async Task AsyncSetTutorialFlags(int id, uint[] flags){
+            MySqlCommand cmd = new MySqlCommand("DELETE FROM `account_tutorial` WHERE `id`=@id; INSERT INTO `account_tutorial` VALUES (@id,@t0,@t1,@t2,@t3,@t4,@t5,@t6,@t7);",conn);
+            cmd.Parameters.AddWithValue("id",id);
+            MySqlParameter[] flagParams = new MySqlParameter[8];
+            for(int i=0;i<8;i++){
+                flagParams[i] = new MySqlParameter("t"+i,flags[i]);
+            }
+            cmd.Parameters.AddRange(flagParams);
+            await cmd.ExecuteNonQueryAsync();
+        }
+
         public async Task AsyncUpdateAccount(AccountInfo info)
         {
-            try{
             MySqlCommand cmd = new MySqlCommand("UPDATE `accounts` SET `v`=@v, `s`=@s,`sessionkey`=@sessionkey, `last_login`=@lastlogin, `email`=@email,`last_ip`=@lastip, `failed_logins`=@failedlogins, `locked`=@locked, `lock_country`=@lock_country, `online`=@online, `locale`=@locale, `os`=@os WHERE `id`=@id",conn);
             cmd.Parameters.AddWithValue("id", info.id);
             cmd.Parameters.AddWithValue("v", info.v);
@@ -116,11 +146,6 @@ namespace Mimic.Common
             cmd.Parameters.AddWithValue("locale", info.locale);
             cmd.Parameters.AddWithValue("os", info.os);
             await cmd.ExecuteNonQueryAsync();
-            }catch(Exception e)
-            {
-                Debug.WriteLine(e);
-                throw e;
-            }
         }
     }
 }

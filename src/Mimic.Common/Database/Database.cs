@@ -12,5 +12,7 @@ namespace Mimic.Common
         Task<AccountInfo> AsyncFetchAccountByName(string name);
         Task<AccountInfo> AsyncFetchAccountById(int id);
         Task AsyncUpdateAccount(AccountInfo info);
+        Task<uint[]> AsyncFetchTutorialFlags(int id);
+        Task AsyncSetTutorialFlags(int id, uint[] flags);
     }
 }

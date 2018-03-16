@@ -1,12 +1,15 @@
 using System;
 using System.Text;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Diagnostics;
 
 namespace Mimic.WorldServer
 {
     public class WorldPacket
     {
-        private WorldCommand cmd;
+        public WorldCommand cmd;
         private WorldHandler wh;
 
         private List<byte> data;
@@ -15,6 +18,7 @@ namespace Mimic.WorldServer
         public WorldPacket(WorldCommand cmd, WorldHandler wh)
         {
             this.wh = wh;
+            this.cmd = cmd;
             data = new List<byte>();
             append((UInt16)0);
             append((UInt16)cmd);
@@ -24,7 +28,16 @@ namespace Mimic.WorldServer
         {
             this.wh = wh;
             this.data = new List<byte>();
-            this.data.AddRange(wh._ac.decrypt(data));
+            this.data.AddRange(data);
+
+            byte[] cmdbuffer = {data[0],data[1],data[2],data[3]};
+            byte[] decCMD = wh._ac.decrypt(cmdbuffer);
+            this.data[0] = decCMD[0];
+            this.data[1] = decCMD[1];
+            this.data[2] = decCMD[2];
+            this.data[3] = decCMD[3];
+            this.cmd = (WorldCommand)BitConverter.ToUInt32(decCMD,0);
+            this._rpos=4;
         }
 
         public int _rpos;
@@ -143,12 +156,23 @@ namespace Mimic.WorldServer
 
         public byte[] result()
         {
-            int len = data.Count - 2;
+            var dataArr = data.ToArray();
+
+            int len = dataArr.Length - 2;
             byte lenb1 = (byte)(len & 0xff);
             byte lenb2 = (byte)(len << 8);
-            data[1] = lenb1;
-            data[0] = lenb2;
-            return wh._ac.encrypt(data.ToArray());
+
+
+
+            dataArr[1] = lenb1;
+            dataArr[0] = lenb2;
+            Debug.WriteLine(BitConverter.ToString(dataArr).Replace("-", ""));
+
+            var header = wh._ac.encrypt(dataArr.Take(4).ToArray());
+            Debug.WriteLine(BitConverter.ToString(header).Replace("-", ""));
+            var res = header.Concat(dataArr.Skip(4)).ToArray();
+            Debug.WriteLine(BitConverter.ToString(res).Replace("-", ""));
+            return res;
         }
     }
 }

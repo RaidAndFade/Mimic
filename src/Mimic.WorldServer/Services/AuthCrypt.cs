@@ -1,8 +1,8 @@
 using System;
 using System.Security.Cryptography;
+using System.Diagnostics;
 using Org.BouncyCastle.Crypto.Engines;
 using Org.BouncyCastle.Crypto.Parameters;
-using System.Diagnostics;
 using Mimic.Common;
 
 namespace Mimic.WorldServer
@@ -30,16 +30,13 @@ namespace Mimic.WorldServer
                 throw new Exception("InvalidDigestSize");
             }
 
-            Debug.WriteLine(BitConverter.ToString(decHash).Replace("-", ""));
-            Debug.WriteLine(BitConverter.ToString(encHash).Replace("-", ""));
-
             clientDecrypt.Init(true, new RC2Parameters(decHash));
             serverEncrypt.Init(true, new RC2Parameters(encHash));
 
             byte[] pass = new byte[1024];
             serverEncrypt.ProcessBytes(pass,0,pass.Length,pass,0);
             pass = new byte[1024];
-            clientDecrypt.ProcessBytes(pass,0,pass.Length,pass,0);
+            clientDecrypt.ProcessBytes(pass, 0, pass.Length, pass, 0);
             _ready = true;
         }
 
@@ -49,9 +46,6 @@ namespace Mimic.WorldServer
                 return d;
             byte[] res = new byte[d.Length];
             clientDecrypt.ProcessBytes(d,0,d.Length,res,0);
-            Debug.WriteLine("DEC");
-            Debug.WriteLine(BitConverter.ToString(d).Replace("-", ""));
-            Debug.WriteLine(BitConverter.ToString(res).Replace("-", ""));
             return res;
         }
 
@@ -61,9 +55,6 @@ namespace Mimic.WorldServer
                 return d;
             byte[] res = new byte[d.Length];
             serverEncrypt.ProcessBytes(d, 0, d.Length, res, 0);
-            Debug.WriteLine("ENC");
-            Debug.WriteLine(BitConverter.ToString(d).Replace("-", ""));
-            Debug.WriteLine(BitConverter.ToString(res).Replace("-", ""));
             return res;
         }
     }

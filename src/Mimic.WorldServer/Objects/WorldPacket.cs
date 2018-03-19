@@ -14,7 +14,7 @@ namespace Mimic.WorldServer
 
         private List<byte> data;
 
-
+        public WorldPacket(WorldCommand cmd, WorldSession ws) : this(cmd,ws._wh) {} //im too damn lazy to type this._wh every time. sorry
         public WorldPacket(WorldCommand cmd, WorldHandler wh)
         {
             this.wh = wh;
@@ -152,6 +152,9 @@ namespace Mimic.WorldServer
         public void append(Int64 d)
         {
             append(BitConverter.GetBytes(d));
+        }
+        public void append(float f){
+            append(BitConverter.GetBytes(f));
         }
 
         public byte[] result()

@@ -16,44 +16,45 @@ namespace Mimic.WorldServer
 {
     public class WorldSession
     {
-        public static uint CLIENTCACHE_VERSION = 0; //load this from a config;
-
+        public static uint CLIENTCACHE_VERSION = 64; //load this from a config;
         public static uint STANDARD_ADDON_CRC = 0x4C1C776D;
+        public static byte GLOBAL_CACHE_MASK = 0x15;
+        public static byte CHARACTER_CACHE_MAX = 0xEA;
 
         private IPAddress ip;
         private AccountInfo _info;
 
-        private WorldHandler _wh;
+        public WorldHandler _wh;
 
         private AddonInfo[] _addonList;
 
-        private uint[] _tutorialFlags;
+        private AccountTutorialFlags _tutorialFlags;
+        private AccountData[] _data;
+        private Character[] _charcache;
+        private bool _loaded = false;
+
+        private OpcodeHandler ophandler;
+
+        private Queue<WorldPacket> wp;
         
-        public WorldSession(int id, string name, WorldHandler wh, AccountInfo info){
+        public WorldSession(WorldHandler wh, AccountInfo info){
             ip = (wh._client.Client.RemoteEndPoint as IPEndPoint).Address;
             _wh = wh;
             _info = info;
             _info.online=true;
-            Program.authDatabase.AsyncUpdateAccount(_info);
-        }
-
-        public async Task LoadSessionData(){
-            _tutorialFlags = await Program.authDatabase.AsyncFetchTutorialFlags(_info.id);
-            if(_tutorialFlags == null){
-                _tutorialFlags = new uint[8];
-                Program.authDatabase.AsyncSetTutorialFlags(_info.id,_tutorialFlags);
-            }
+            Program.authDatabase.Accounts.Update(_info);
+            ophandler = new OpcodeHandler(this);
         }
 
         public async Task InitSession(){
-            await LoadSessionData();
+            LoadSessionData();
             SendAddonsInfo();
             SendClientCacheVersion();
             SendTutorialFlags();
         }
 
         public async Task HandlePacket(WorldPacket wp){
-            
+            ophandler.handle(wp);
         }
 
         public void ReadAddonsInfo(byte[] data){
@@ -92,22 +93,77 @@ namespace Mimic.WorldServer
             }
         }
 
-        public void SendTutorialFlags(){
-            WorldPacket wp = new WorldPacket(WorldCommand.SMSG_TUTORIAL_FLAGS,_wh);
-            for(int i=0;i<8;i++){
-                wp.append(_tutorialFlags[i]);
+       /******************************************\
+        *  _____                      _           *
+        * |  __ \                    (_)       _  *
+        * | |  \/ ___ _ __   ___ _ __ _  ___  (_) *
+        * | | __ / _ \ '_ \ / _ \ '__| |/ __|     *
+        * | |_\ \  __/ | | |  __/ |  | | (__   _  *
+        *  \____/\___|_| |_|\___|_|  |_|\___| (_) *
+        *                                         *
+        \*****************************************/
+        public void LoadSessionData(){
+            if(_loaded)return;
+            try{
+                _tutorialFlags = Program.authDatabase.Account_Tutorial.Single(f=>f.id==_info.id);
+            }catch(InvalidOperationException ioe){
+                _tutorialFlags = new AccountTutorialFlags{id = _info.id, tut0 = 0, tut1 = 0, tut2 = 0, tut3 = 0, tut4 = 0, tut5 = 0, tut6 = 0, tut7 = 0};
+                Program.authDatabase.Account_Tutorial.Add(_tutorialFlags);
+                Program.authDatabase.SaveChangesAsync();
             }
+            _data = new AccountData[Consts.ACCOUNT_DATA_TYPE_LEN];
+            for(var i=0;i<Consts.ACCOUNT_DATA_TYPE_LEN;i++){
+                _data[i] = new AccountData{ account=_info.id, data={}, type=(byte)i, time=0 };
+            }
+            try{
+                List<AccountData> datas = Program.authDatabase.Account_Data.Where(d=>d.account == _info.id).ToList();
+                foreach(var data in datas){
+                    _data[data.type] = data;
+                }
+            }catch(InvalidOperationException ioe){
+
+            }
+            LoadCharacters();
+            _loaded=true;
+        }
+
+        public void LoadCharacters(){
+            _charcache = Program.worldDatabase.Characters.Where(c=>c.account==_info.id&&c.deleteInfo_name==null).ToArray();
+        }
+
+        public void Update(long diff){
+
+        }
+
+        /***************************************************************************\
+        * ______          _        _     _   _                 _ _                  *
+        * | ___ \        | |      | |   | | | |               | | |               _ *
+        * | |_/ /_ _  ___| | _____| |_  | |_| | __ _ _ __   __| | | ___ _ __ ___ (_)*
+        * |  __/ _` |/ __| |/ / _ \ __| |  _  |/ _` | '_ \ / _` | |/ _ \ '__/ __|   *
+        * | | | (_| | (__|   <  __/ |_  | | | | (_| | | | | (_| | |  __/ |  \__ \ _ *
+        * \_|  \__,_|\___|_|\_\___|\__| \_| |_/\__,_|_| |_|\__,_|_|\___|_|  |___/(_)*
+        *                                   SEND                                    *
+        \***************************************************************************/
+        public void SendTutorialFlags(){
+            WorldPacket wp = new WorldPacket(WorldCommand.SMSG_TUTORIAL_FLAGS,this);
+            wp.append(_tutorialFlags.tut0);
+            wp.append(_tutorialFlags.tut1);
+            wp.append(_tutorialFlags.tut2);
+            wp.append(_tutorialFlags.tut3);
+            wp.append(_tutorialFlags.tut4);
+            wp.append(_tutorialFlags.tut5);
+            wp.append(_tutorialFlags.tut6);
+            wp.append(_tutorialFlags.tut7);
             _wh._writer.Write(wp.result());
-            _wh._writer.Flush();
         }
         public void SendClientCacheVersion(){
-            WorldPacket wp = new WorldPacket(WorldCommand.SMSG_CLIENTCACHE_VERSION,_wh);
+            WorldPacket wp = new WorldPacket(WorldCommand.SMSG_CLIENTCACHE_VERSION,this);
             wp.append(CLIENTCACHE_VERSION);
             _wh._writer.Write(wp.result());
-            _wh._writer.Flush();
         }
         public void SendAddonsInfo()
         {
+            Debug.WriteLine("SENDING ADDONINFO");
             byte[] addonPublicKey = {
                 0xC3, 0x5B, 0x50, 0x84, 0xB9, 0x3E, 0x32, 0x42, 0x8C, 0xD0, 0xC7, 0x48, 0xFA, 0x0E, 0x5D, 0x54,
                 0x5A, 0xA3, 0x0E, 0x14, 0xBA, 0x9E, 0x0D, 0xB9, 0x5D, 0x8B, 0xEE, 0xB6, 0x84, 0x93, 0x45, 0x75,
@@ -131,6 +187,7 @@ namespace Mimic.WorldServer
             foreach (var addon in _addonList)
             {
                 wp.append(addon.state);
+                wp.append((byte)(addon.useCRCorPubKey?1:0));
                 if(addon.useCRCorPubKey){
                     byte usePK = (byte)(addon.crc != STANDARD_ADDON_CRC?1:0);
                     wp.append(usePK);
@@ -157,7 +214,164 @@ namespace Mimic.WorldServer
             }*/
 
             _wh._writer.Write(wp.result());
-            _wh._writer.Flush();
         }
+
+        public void SendDataTimes(uint mask){
+            Debug.WriteLine("SENDING DATATIMES");
+            WorldPacket wp = new WorldPacket(WorldCommand.SMSG_ACCOUNT_DATA_TIMES,this);
+            wp.append((uint)DateTimeOffset.Now.ToUnixTimeSeconds()); //TODO GameTime::GetGameTime() (serverwide time intervals)
+            wp.append((byte)1);
+            wp.append(mask);
+            for(int i=0;i<Consts.ACCOUNT_DATA_TYPE_LEN;i++){
+                if((mask & (1 << i)) != 0){
+                    wp.append((uint)_data[i].time);
+                }
+            }
+            _wh._writer.Write(wp.result());
+        }
+
+        public void SendRealmSplit(WorldPacket req){
+            Debug.WriteLine("SENDING REALMSPLIT");
+            Task.Delay(2000);
+            WorldPacket wp = new WorldPacket(WorldCommand.SMSG_REALM_SPLIT,this);
+            string splitDate = "01/01/01";
+            wp.append(req.ReadInt32()); //unk checksum or something
+            wp.append(0);
+            wp.append(splitDate);
+            _wh._writer.Write(wp.result());
+        }
+
+        public void SendCharEnum(){
+            //LoadCharacters();
+            Task.Delay(4000); //i wish i knew...
+            _charcache = new Character[1];
+            _charcache[0]=
+                new Character{
+                    guid = 1,
+                    name="Abb",
+                    race=7,
+                    charclass=4,
+                    gender=0,
+                    skin=4,
+                    face=6,
+                    hairStyle=0,
+                    hairColor=0,
+                    facialStyle=1,
+                    level=1,
+                    zone=1,
+                    map=0,
+                    posx=-6240f,
+                    posy=331f,
+                    posz=382.783f,
+                    flags=0,
+                    at_login=0,
+                    equipmentCache="0 0 0 0 0 0 6096 0 56 0 0 0 1395 0 55 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 35 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+            };
+
+            WorldPacket wp = new WorldPacket(WorldCommand.SMSG_CHAR_ENUM,this);
+            wp.append((byte)_charcache.Length);
+
+            foreach(var chr in _charcache){
+                wp.append((ulong)chr.guid);
+                wp.append(chr.name);
+                wp.append(chr.race);
+                wp.append(chr.charclass);
+                wp.append(chr.gender);
+                wp.append(chr.skin);
+                wp.append(chr.face);
+                wp.append(chr.hairStyle);
+                wp.append(chr.hairColor);
+                wp.append(chr.facialStyle);
+                wp.append((byte)chr.level);
+                wp.append((uint)chr.zone);
+                wp.append((uint)chr.map);
+                wp.append(chr.posx);
+                wp.append(chr.posy);
+                wp.append(chr.posz);
+                wp.append(0); //guild_id (-1)
+
+                var playerFlags = chr.flags;
+                var atloginFlags = chr.at_login;
+                uint charFlags = 0;
+
+                //TODO if styles and class+race do not work, demand fix.
+
+                //PlayerFlags & CharFlags
+                if((atloginFlags & (ushort)AtLoginFlags.AT_LOGIN_RESURRECT) != 0)
+                    playerFlags &= ~(uint)PlayerFlags.PLAYER_FLAGS_GHOST;
+                if((atloginFlags & (ushort)AtLoginFlags.AT_LOGIN_RENAME) != 0)
+                    charFlags &= ~(uint)CharacterFlags.CHARACTER_FLAG_RENAME;
+
+                if((playerFlags & (ushort)PlayerFlags.PLAYER_FLAGS_HIDE_HELM) != 0)
+                    charFlags |= (uint)CharacterFlags.CHARACTER_FLAG_HIDE_HELM;
+                if((playerFlags & (ushort)PlayerFlags.PLAYER_FLAGS_HIDE_CLOAK) != 0)
+                    charFlags |= (uint)CharacterFlags.CHARACTER_FLAG_HIDE_CLOAK;
+
+                if((playerFlags & (ushort)PlayerFlags.PLAYER_FLAGS_GHOST) != 0)
+                    charFlags |= (uint)CharacterFlags.CHARACTER_FLAG_GHOST;
+                
+                //TODO declined name
+                wp.append(charFlags);
+                
+                if((atloginFlags & (ushort)AtLoginFlags.AT_LOGIN_CUSTOMIZE) != 0)
+                    wp.append((uint)CharacterCustomizeFlags.CHAR_CUSTOMIZE_FLAG_CUSTOMIZE);
+                else if((atloginFlags & (ushort)AtLoginFlags.AT_LOGIN_CHANGE_FACTION) != 0)
+                    wp.append((uint)CharacterCustomizeFlags.CHAR_CUSTOMIZE_FLAG_RACE);
+                else if((atloginFlags & (ushort)AtLoginFlags.AT_LOGIN_CHANGE_RACE) != 0) //cdd70bc6 357e04c3 f90fa742
+                    wp.append((uint)CharacterCustomizeFlags.CHAR_CUSTOMIZE_FLAG_RACE);
+                else
+                    wp.append((uint)CharacterCustomizeFlags.CHAR_CUSTOMIZE_FLAG_NONE);
+                
+                wp.append((byte)((atloginFlags & (uint)AtLoginFlags.AT_LOGIN_FIRST) != 0?1:0));
+
+                uint petDisplayId = 0;
+                uint petLevel = 0;
+                uint petFamily = 0;
+
+                wp.append(petDisplayId);
+                wp.append(petLevel);
+                wp.append(petFamily);
+                //get player pet, if not dead(not player_flags_ghost)
+
+                var items = chr.equipmentCache.Split(" ");
+                for (int slot = 0; slot < Consts.INVENTORY_SLOT_BAG_END; slot++)
+                {
+                    //send blanks for now
+                    wp.append(0); //item displayid
+                    wp.append((byte)0); //inventory type
+                    wp.append(0); //enchant aura
+                }
+            }
+
+            _wh._writer.Write(wp.result());
+        }
+
+        //SEND FINISH
+
+        /***************************************************************************\
+        * ______          _        _     _   _                 _ _                  *
+        * | ___ \        | |      | |   | | | |               | | |               _ *
+        * | |_/ /_ _  ___| | _____| |_  | |_| | __ _ _ __   __| | | ___ _ __ ___ (_)*
+        * |  __/ _` |/ __| |/ / _ \ __| |  _  |/ _` | '_ \ / _` | |/ _ \ '__/ __|   *
+        * | | | (_| | (__|   <  __/ |_  | | | | (_| | | | | (_| | |  __/ |  \__ \ _ *
+        * \_|  \__,_|\___|_|\_\___|\__| \_| |_/\__,_|_| |_|\__,_|_|\___|_|  |___/(_)*
+        *                                   RECV                                    *
+        \***************************************************************************/
+
+        public void RecvDataTimesRequest(WorldPacket pck){
+            SendDataTimes(GLOBAL_CACHE_MASK);
+        }
+
+        public void RecvRealmSplitRequest(WorldPacket pck){
+            SendRealmSplit(pck);
+        }
+
+        public void RecvCharEnumRequest(WorldPacket pck){
+            SendCharEnum();
+        }
+
+        //RECV FINISH
+
+
     }
 }

@@ -28,7 +28,7 @@ namespace Mimic.WorldServer
 
         private AuthSession _authsession;
 
-        private AuthStatus _status;
+        public AuthStatus _status;
 
         public async Task RunAsync(TcpClient client)
         {
@@ -124,18 +124,19 @@ namespace Mimic.WorldServer
             _authsession.battlegroupId = wp.ReadUInt32();
             _authsession.realmId = wp.ReadUInt32();
             _authsession.dosResponse = wp.ReadUInt64();
-            _authsession.digest = wp.ReadBytes(20);
+            _authsession.digest = wp.ReadBytes(20);  
+            //there's 4 bytes in here that i should probably read.... 
             _authsession.addonInfo = wp.ReadBytes(wp.Length-wp._rpos);
             //_authsession.unk0 = await _reader.ReadBytesAsync(len);
 
-            _info = await Program.authDatabase.AsyncFetchAccountByName(_authsession.account);
+            _info = Program.authDatabase.Accounts.Single(a=>a.username == _authsession.account);
             var sessionKey = MimicUtils.HexStringToByteArray(_info.sessionkey,40);
             Debug.WriteLine(_info.sessionkey);
 
             _ac = new AuthCrypt(sessionKey);
             // Debug.WriteLine(_authsession);
 
-            _session = new WorldSession(_info.id,_info.username,this,_info);
+            _session = new WorldSession(this,_info);
             _session.ReadAddonsInfo(_authsession.addonInfo);
 
 
@@ -161,6 +162,7 @@ namespace Mimic.WorldServer
                 Debug.WriteLine("Didn't auth properly");
                 pck.append((byte)14);
                 Close();
+                return;
             }
             else
             {
@@ -172,12 +174,11 @@ namespace Mimic.WorldServer
                 pck.append((byte)2);
                 _status = AuthStatus.AUTHED;
             }
-
+            Program.world.AddSession(_session);
 
             byte[] pdata = pck.result();
             _writer.Write(pdata);
 
-            var _ = _session.InitSession();
         }
 
         public void Dispose()

@@ -115,7 +115,7 @@ namespace Mimic.RealmServer
             var accountName = await _reader.ReadStringAsync(accountNameLength);
             accountName = accountName.ToUpperInvariant();
 
-            _info = await Program.authDatabase.AsyncFetchAccountByName(accountName);
+            _info = Program.authDatabase.Accounts.Single(a => a.username == accountName);
 
             _info.last_ip = realAddress.ToString();
             //_info.last_login = new DateTime().ToUniversalTime().ToString();
@@ -124,7 +124,8 @@ namespace Mimic.RealmServer
 
             byte[] passhash = MimicUtils.HexStringToByteArray(_info.pass_hash);
             BigInteger s,v;
-            if(_info.s!=""){        
+            
+            if(_info.s!=""&&_info.v!=""){        
                 s = SrpHandler.BigIntFromHexString(_info.s);
                 v = SrpHandler.BigIntFromHexString(_info.v);
             }else{
@@ -196,9 +197,9 @@ namespace Mimic.RealmServer
             var accountName = await _reader.ReadStringAsync(accountNameLength);
             accountName = accountName.ToUpperInvariant();
 
-            _info = await Program.authDatabase.AsyncFetchAccountByName(accountName);
+            _info = Program.authDatabase.Accounts.Single(a => a.username == accountName);
             _info.last_ip = realAddress.ToString();
-            _info.last_login = new DateTime().ToUniversalTime().ToString();
+            _info.last_login = DateTime.Now;
             _info.os = os.ToString();
             //_info.locale = (int)locale; wrong number
 
@@ -245,15 +246,16 @@ namespace Mimic.RealmServer
             }
 
             //print sessionkey
-            Debug.WriteLine(BitConverter.ToString(SrpHandler.BigIntToByteArray(_authentication._K)).Replace("-", ""));
 
-            var proof = _authentication.ComputeProof(); 
+            var proof = _authentication.ComputeProof();
 
             _info.sessionkey = _authentication._K.ToString("x");
             _info.s = _authentication._s.ToString("x");
             _info.v = _authentication._v.ToString("x");
-            Program.authDatabase.AsyncUpdateAccount(_info);
+            Program.authDatabase.Accounts.Update(_info);
+            Program.authDatabase.SaveChanges();
 
+            Debug.WriteLine(_info.sessionkey);
             // TODO: check build number and send back appropriate packet
             // (assuming WotLK right now, 3.3.5a, build 12340)
 
@@ -297,7 +299,8 @@ namespace Mimic.RealmServer
             Debug.WriteLine(BitConverter.ToString(hash).Replace("-", ""));
             Debug.WriteLine(BitConverter.ToString(R2).Replace("-", ""));
 
-            Program.authDatabase.AsyncUpdateAccount(_info);
+            Program.authDatabase.Accounts.Update(_info);
+            Program.authDatabase.SaveChanges();
 
             List<byte> pktdata = new List<byte>();
             pktdata.Add((byte)AuthCommand.ReconnectProof);
@@ -314,7 +317,7 @@ namespace Mimic.RealmServer
 
             List<byte> realms = new List<byte>();
             realms.AddRange(BitConverter.GetBytes(0)); // unused/unknown
-            realms.AddRange(BitConverter.GetBytes((ushort)1)); // number of realms
+            realms.AddRange(BitConverter.GetBytes((ushort)2)); // number of realms
 
 
             realms.Add(0x02); // realm type
@@ -325,10 +328,21 @@ namespace Mimic.RealmServer
             realms.AddRange(Encoding.UTF8.GetBytes("99.228.169.83:8085")); // address
             realms.Add(0); // null-terminator
             realms.AddRange(BitConverter.GetBytes(0.5f)); // population level
+            realms.Add(0x01); // number of characters
+            realms.Add(0x01); // timezone
+            realms.Add(0x1); // realm id
+
+            realms.Add(0x02); // realm type
+            realms.Add(0x00); // lock (0x00 == unlocked)
+            realms.Add(0x40); // realm flags (0x40 == recommended)
+            realms.AddRange(Encoding.UTF8.GetBytes("Test2")); // name
+            realms.Add(0); // null-terminator
+            realms.AddRange(Encoding.UTF8.GetBytes("99.228.169.83:8086")); // address
+            realms.Add(0); // null-terminator
+            realms.AddRange(BitConverter.GetBytes(0.5f)); // population level
             realms.Add(0x00); // number of characters
             realms.Add(0x01); // timezone
-
-            realms.Add(0x2C); // unknown
+            realms.Add(0x2); // realm id
 
             realms.AddRange(BitConverter.GetBytes((ushort)0x0010)); // unused/unknown
 
